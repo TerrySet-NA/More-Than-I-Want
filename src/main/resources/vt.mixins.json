@@ -1,0 +1,29 @@
+{
+  "required": true,
+  "minVersion": "0.8",
+  "package": "com.vt.vt.mixin",
+  "compatibilityLevel": "JAVA_21",
+  "plugin": "com.vt.vt.mixin.VTMixinPlugin",
+  "mixins": [
+    "AccessorItemEntity",
+    "MixinConfigValue", 
+    "FixKaleidoscopeMillstoneMixin"
+  ],
+  "client": [
+    "FontMixin",
+    "ClientLanguageMixin",
+    "GuiGraphicsMixin",
+    "FixEarlyMouseInputMixin",
+    "ClientLanguageAccessor",
+    "MixinNeoForgeConfig",
+    "LivingEntityNaNFixMixin",
+    "KeyMappingSetKeyMixin",
+    "OptionsSubScreenAccessor",
+    "AggressiveChunkUnloadMixin",
+    "AccessorTooltip", 
+    "MixinNeoForgeValue"
+  ],
+  "injectors": {
+    "defaultRequire": 1
+  }
+}
