@@ -2,7 +2,8 @@ package com.vt.vt.mixin;
 
 import org.spongepowered.asm.mixin.extensibility.IMixinConfigPlugin;
 import org.spongepowered.asm.mixin.extensibility.IMixinInfo;
-import org.objectweb.asm.Opcodes;
+import org.apache.maven.artifact.versioning.ArtifactVersion;
+import org.apache.maven.artifact.versioning.DefaultArtifactVersion;
 import org.objectweb.asm.tree.ClassNode;
 import org.objectweb.asm.tree.MethodNode;
 
@@ -19,21 +20,51 @@ public class VTMixinPlugin implements IMixinConfigPlugin {
 
     public static final Logger LOGGER = LogUtils.getLogger();
 
-    // Configured 目標版本常數
+    // Mod ID 常數定義
+    private static final String NEOFORGE_MOD_ID = "neoforge";
     private static final String CONFIGURED_MOD_ID = "configured";
-    private static final String TARGET_CONFIGURED_VERSION = "2.6.3";
-    private static final String TARGET_CONFIGURED_FILE = "configured-neoforge-1.21.1-2.6.3";
-
-    // 萬花筒衝突目標版本常數
+    private static final String FORGE_CONFIG_API_PORT_MOD_ID = "forgeconfigapiport";
     private static final String TARGET_COOKERY_MOD_ID = "kaleidoscope_cookery";
     private static final String TARGET_COMPAT_MOD_ID = "kaleidoscope_compat";
-    private static final String TARGET_COOKERY_VERSION = "1.6.0";
-    private static final String TARGET_COMPAT_VERSION = "2.9.7-neoforge+mc1.21.1-Patch.jar";
+
+    // 完全匹配的目標 Jar 檔名
+    private static final String TARGET_CONFIGURED_FILE = "configured-neoforge-1.21.1-2.6.3.jar";
+    private static final String TARGET_FORGE_FILE = "ForgeConfigAPIPort-v21.1.6-1.21.1-NeoForge.jar";
+    private static final String TARGET_COOKERY_FILE = "kaleidoscopecookery-1.6.0-neoforge+mc1.21.1.jar";
+    private static final String TARGET_COMPAT_FILE = "kaleidoscope_compat-2.9.7-neoforge+mc1.21.1-Patch.jar";
 
     private static final String TARGET_MILLSTONE_CLASS = "com.github.ysbbbbbb.kaleidoscopecookery.blockentity.kitchen.MillstoneBlockEntity";
 
+    private static final ArtifactVersion BREAKING_NEOFORGE_VERSION = new DefaultArtifactVersion("21.1.26");
+
+    /**
+     * 檢查當前 NeoForge 版本是否大於等於 21.1.26
+     */
+    private boolean isNeoForgeAboveOrEqual26() {
+        Optional<? extends ModInfo> neoMod = FMLLoader.getLoadingModList().getMods().stream()
+                .filter(mod -> mod.getModId().equals(NEOFORGE_MOD_ID))
+                .findFirst();
+
+        if (neoMod.isEmpty()) {
+            LOGGER.warn("[VT-Compat] Failed to locate NeoForge mod info in loading list.");
+            return false;
+        }
+
+        String rawVer = neoMod.get().getVersion().toString();
+        if (rawVer.startsWith("1.21.1-")) {
+            rawVer = rawVer.substring("1.21.1-".length());
+        }
+
+        ArtifactVersion currentVersion = new DefaultArtifactVersion(rawVer);
+        return currentVersion.compareTo(BREAKING_NEOFORGE_VERSION) >= 0;
+    }
+
     @Override
     public boolean shouldApplyMixin(String targetClassName, String mixinClassName) {
+        if (mixinClassName.contains("FixFabricAttachmentTaskMixin")) {
+            return shouldApplyFabricAttachmentsFix();
+        }
+
         if (mixinClassName.contains("MixinNeoForge")) {
             return shouldApplyConfiguredMixin();
         }
@@ -45,32 +76,59 @@ public class VTMixinPlugin implements IMixinConfigPlugin {
         return true;
     }
 
+    private boolean shouldApplyFabricAttachmentsFix() {
+        // 1. 版本門檻：NeoForge >= 21.1.26
+        if (!isNeoForgeAboveOrEqual26()) {
+            return false;
+        }
+
+        // 2. 只有在載入了這顆內包 fabric_networking 的 ForgeConfigAPIPort 時才啟動攔截
+        Optional<? extends ModInfo> forgePortOpt = FMLLoader.getLoadingModList().getMods().stream()
+                .filter(mod -> mod.getModId().equals(FORGE_CONFIG_API_PORT_MOD_ID))
+                .findFirst();
+
+        if (forgePortOpt.isEmpty()) {
+            return false;
+        }
+
+        String forgePortFile = forgePortOpt.get().getOwningFile().getFile().getFileName();
+        boolean isTargetForgePort = TARGET_FORGE_FILE.equalsIgnoreCase(forgePortFile);
+
+        if (isTargetForgePort) {
+            LOGGER.info("[VT-Compat] Target ForgeConfigAPIPort detected on NeoForge >= 21.1.26. Applying FixFabricAttachmentTaskMixin.");
+            return true;
+        }
+
+        return false;
+    }
+
+    /**
+     * 🎯 針對 Configured 模組本體的 TextMatrix / GUI 修復
+     */
     private boolean shouldApplyConfiguredMixin() {
         Optional<? extends ModInfo> configuredOpt = FMLLoader.getLoadingModList().getMods().stream()
                 .filter(mod -> mod.getModId().equals(CONFIGURED_MOD_ID))
                 .findFirst();
 
         if (configuredOpt.isEmpty()) {
-            LOGGER.info("[VT-TextMatrix] Configured mod NOT present. Skipping MixinNeoForgeConfig.");
             return false;
         }
 
-        ModInfo modInfo = configuredOpt.get();
-        String versionStr = modInfo.getVersion().toString();
-        String fileName = modInfo.getOwningFile().getFile().getFileName();
-
-        boolean isTargetConfigured = versionStr.contains(TARGET_CONFIGURED_VERSION)
-                || fileName.contains(TARGET_CONFIGURED_FILE);
+        String configuredFile = configuredOpt.get().getOwningFile().getFile().getFileName();
+        boolean isTargetConfigured = TARGET_CONFIGURED_FILE.equalsIgnoreCase(configuredFile);
 
         if (isTargetConfigured) {
-            LOGGER.info("[VT-TextMatrix] Detected target Configured mod [{}] (Version: {}). Applying MixinNeoForgeConfig safely.", fileName, versionStr);
+            LOGGER.info("[VT-TextMatrix] Detected exact Configured file [{}]. Applying MixinNeoForgeConfig safely.", configuredFile);
             return true;
         }
 
-        LOGGER.info("[VT-TextMatrix] Configured present but version mismatch (File: {}, Version: {}). Skipping MixinNeoForgeConfig.", fileName, versionStr);
+        LOGGER.info("[VT-TextMatrix] Configured file mismatch (Found: {}, Expected: {}). Skipping.", configuredFile, TARGET_CONFIGURED_FILE);
         return false;
     }
 
+    /**
+     * 🎯 研磨機衝突修復（完全精確比對 Cookery 與 Compat 兩者檔名）
+     */
     private boolean shouldApplyMillstoneHotfix() {
         var modList = FMLLoader.getLoadingModList().getMods();
 
@@ -86,28 +144,20 @@ public class VTMixinPlugin implements IMixinConfigPlugin {
             return false;
         }
 
-        ModInfo cookeryInfo = cookeryOpt.get();
-        ModInfo compatInfo = compatOpt.get();
+        String cookeryFile = cookeryOpt.get().getOwningFile().getFile().getFileName();
+        String compatFile = compatOpt.get().getOwningFile().getFile().getFileName();
 
-        String cookeryVer = cookeryInfo.getVersion().toString();
-        String cookeryFile = cookeryInfo.getOwningFile().getFile().getFileName();
-
-        String compatVer = compatInfo.getVersion().toString();
-        String compatFile = compatInfo.getOwningFile().getFile().getFileName();
-
-        boolean isTargetCookery = cookeryVer.contains(TARGET_COOKERY_VERSION) 
-                || cookeryFile.contains(TARGET_COOKERY_VERSION);
-
-        boolean isTargetCompat = compatVer.contains(TARGET_COMPAT_VERSION) 
-                || compatFile.contains(TARGET_COMPAT_VERSION)
-                || compatFile.contains("8920105");
+        boolean isTargetCookery = TARGET_COOKERY_FILE.equalsIgnoreCase(cookeryFile);
+        boolean isTargetCompat = TARGET_COMPAT_FILE.equalsIgnoreCase(compatFile);
 
         if (isTargetCookery && isTargetCompat) {
-            LOGGER.warn("[VT-Compat] Detected collision between [{}] and [{}]. Applying FixKaleidoscopeMillstoneMixin.", cookeryFile, compatFile);
+            LOGGER.warn("[VT-Compat] Detected collision between exact files [{}] and [{}]. Applying FixKaleidoscopeMillstoneMixin.",
+                    cookeryFile, compatFile);
             return true;
         }
 
-        LOGGER.info("[VT-Compat] Mod versions mismatch target collision pair (Cookery: {}, Compat: {}). Skipping hotfix.", cookeryFile, compatFile);
+        LOGGER.info("[VT-Compat] Mod files mismatch target collision pair (Cookery: {} [Exp: {}], Compat: {} [Exp: {}]). Skipping hotfix.",
+                cookeryFile, TARGET_COOKERY_FILE, compatFile, TARGET_COMPAT_FILE);
         return false;
     }
 
@@ -125,13 +175,10 @@ public class VTMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public void preApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-        // 🎯 當目標是 MillstoneBlockEntity 且觸發衝突版本時，動態修正方法描述符
         if (TARGET_MILLSTONE_CLASS.equals(targetClassName) && shouldApplyMillstoneHotfix()) {
             if (targetClass != null && targetClass.methods != null) {
                 for (MethodNode method : targetClass.methods) {
-                    // 若存在新版簽名 canBindEntity(Lnet/minecraft/world/entity/LivingEntity;)Z
                     if ("canBindEntity".equals(method.name) && "(Lnet/minecraft/world/entity/LivingEntity;)Z".equals(method.desc)) {
-                        // 暫時重命名原版方法為 canBindEntity$original，避免 kaleidoscope_compat 的模糊匹配碰撞
                         method.name = "canBindEntity$internal";
                         LOGGER.info("[VT-Compat] Renamed LivingEntity overload to avoid Mixin descriptor collision.");
                         break;
@@ -143,7 +190,6 @@ public class VTMixinPlugin implements IMixinConfigPlugin {
 
     @Override
     public void postApply(String targetClassName, ClassNode targetClass, String mixinClassName, IMixinInfo mixinInfo) {
-        // 🎯 在 kaleidoscope_compat 注入完成後，把原版方法名還原，確保原版邏輯完全正常
         if (TARGET_MILLSTONE_CLASS.equals(targetClassName) && shouldApplyMillstoneHotfix()) {
             if (targetClass != null && targetClass.methods != null) {
                 for (MethodNode method : targetClass.methods) {
